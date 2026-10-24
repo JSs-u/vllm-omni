@@ -1058,7 +1058,7 @@ class HeliosPipeline(
         height = (height // 16) * 16
         width = (width // 16) * 16
         num_frames = max(num_frames, 1)
-                if is_enable_stage2:
+        if is_enable_stage2:
             # Reject geometry the pyramid cannot represent before any denoising
             # happens, instead of failing on mismatched extents in stage 2.
             validate_stage2_pixel_geometry(
