@@ -33,6 +33,10 @@ from vllm_omni.diffusion.models.helios.conditioning_cache import (
 )
 from vllm_omni.diffusion.models.helios.helios_transformer import HeliosTransformer3DModel
 from vllm_omni.diffusion.models.helios.scheduling_helios import HeliosScheduler
+from vllm_omni.diffusion.models.helios.stage2_geometry import (
+    validate_stage2_latent_geometry,
+    validate_stage2_pixel_geometry,
+)
 from vllm_omni.diffusion.models.interface import SupportsComponentDiscovery
 from vllm_omni.diffusion.models.progress_bar import ProgressBarMixin
 from vllm_omni.diffusion.profiler.diffusion_pipeline_profiler import DiffusionPipelineProfilerMixin
@@ -635,6 +639,9 @@ class HeliosPipeline(
     def _prepare_stage2_chunk(self, state: StepRequestState) -> None:
         extra = state.extra
         batch_size, num_channel, num_frames_lat, height, width = state.latents.shape
+                # Same contract as the request path, checked on the latent grid the
+        # stepwise scheduler is about to halve.
+        validate_stage2_latent_geometry(height, width, num_stages=int(extra["pyramid_num_stages"]))
         latents_flat = state.latents.permute(0, 2, 1, 3, 4).reshape(
             batch_size * num_frames_lat, num_channel, height, width
         )
@@ -1051,6 +1058,15 @@ class HeliosPipeline(
         height = (height // 16) * 16
         width = (width // 16) * 16
         num_frames = max(num_frames, 1)
+                if is_enable_stage2:
+            # Reject geometry the pyramid cannot represent before any denoising
+            # happens, instead of failing on mismatched extents in stage 2.
+            validate_stage2_pixel_geometry(
+                height,
+                width,
+                num_stages=int(pyramid_num_stages),
+                vae_spatial_scale=self.vae_scale_factor_spatial,
+            )
 
         device = self.device
         dtype = self.transformer.dtype
