@@ -17,6 +17,7 @@ from vllm_omni.diffusion.models.helios.stage2_geometry import (
     validate_stage2_pixel_geometry,
 )
 
+pytestmark = [pytest.mark.core_model, pytest.mark.cpu]
 VAE_SPATIAL_SCALE = 8
 
 
