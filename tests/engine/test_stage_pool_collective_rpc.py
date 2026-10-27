@@ -24,6 +24,13 @@ def _make_pool(*, stage_type: str = "llm", **client_methods: AsyncMock) -> tuple
     return pool, client
 
 
+def _coerce_stage_bool(result):
+    """Reduce a stage result exactly like ``AsyncOmni`` does before returning it."""
+    from vllm_omni.entrypoints.async_omni import AsyncOmni
+
+    return AsyncOmni._coerce_stage_bool(result)
+
+
 @pytest.mark.cpu
 def test_collective_rpc_normalizes_none_args_on_control_helper():
     async def run() -> None:
@@ -240,14 +247,17 @@ def test_add_lora_without_typed_helper_does_not_fall_back():
 
         result = await pool.collective_rpc(0, "add_lora", args=(object(),))
 
-        assert result == {"supported": False, "error": "EngineCore helper add_lora_async is unavailable"}
+        # A failure must be a plain False, not an error dict: AsyncOmni reduces
+        # a non-empty dict to True and would report a load that never happened.
+        assert result is False
+        assert _coerce_stage_bool(result) is False
         client.collective_rpc_async.assert_not_awaited()
 
     asyncio.run(run())
 
 
 @pytest.mark.cpu
-def test_add_lora_helper_failure_is_reported_not_raised():
+def test_add_lora_helper_failure_is_reported_as_false():
     async def run() -> None:
         pool, _client = _make_pool(
             add_lora_async=AsyncMock(side_effect=AttributeError("'list' object has no attribute 'lora_int_id'"))
@@ -255,8 +265,8 @@ def test_add_lora_helper_failure_is_reported_not_raised():
 
         result = await pool.collective_rpc(0, "add_lora", args=(object(),))
 
-        assert result["supported"] is False
-        assert "lora_int_id" in result["error"]
+        assert result is False
+        assert _coerce_stage_bool(result) is False
 
     asyncio.run(run())
 
@@ -271,8 +281,8 @@ def test_add_lora_helper_honors_timeout():
 
         result = await pool.collective_rpc(0, "add_lora", timeout=0.01, args=(object(),))
 
-        assert result["supported"] is False
-        assert "timed out" in result["error"]
+        assert result is False
+        assert _coerce_stage_bool(result) is False
 
     asyncio.run(run())
 
