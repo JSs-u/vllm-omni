@@ -1478,12 +1478,22 @@ class StagePool:
         ``sleep``, ``wake_up``) propagate worker exceptions. Capability probes
         and other RPCs still return ``{"supported": False, "error": ...}``.
         Typed-argument helpers (``add_lora``) use their client helper and report
-        a plain per-replica result, like the diffusion subprocess path.
+        a plain ``bool`` like the diffusion subprocess path. They never return an
+        error dict: ``AsyncOmni._coerce_stage_bool`` reduces a non-empty dict to
+        ``True``, so a failed load would otherwise be reported as success.
         """
         args = tuple(args or ())
         kwargs = dict(kwargs or {})
         client = self.clients[replica_id]
         if client is None:
+            if method in self._TYPED_ARG_ASYNC_METHODS:
+                logger.warning(
+                    "[StagePool] stage=%s replica=%s is not attached; %s reported as failed",
+                    self.stage_id,
+                    replica_id,
+                    method,
+                )
+                return False
             return {
                 "supported": False,
                 "error": f"stage {self.stage_id} replica {replica_id} is not attached",
@@ -1503,9 +1513,20 @@ class StagePool:
                 # ``add_lora`` carries a LoRARequest dataclass; msgpack turns it
                 # into a list on the generic path and the worker then raises
                 # ``'list' object has no attribute 'lora_int_id'``.
+                # These helpers report a plain bool like the diffusion path, so
+                # every failure returns False: an error dict would be reduced to
+                # True by ``AsyncOmni._coerce_stage_bool`` and report a load
+                # that never happened.
                 client_method = getattr(client, f"{method}_async", None)
                 if not callable(client_method):
-                    return {"supported": False, "error": f"EngineCore helper {method}_async is unavailable"}
+                    logger.warning(
+                        "[StagePool] stage=%s replica=%s does not expose %s_async; %s reported as failed",
+                        self.stage_id,
+                        replica_id,
+                        method,
+                        method,
+                    )
+                    return False
                 result = client_method(*args, **kwargs)
                 if timeout is not None:
                     return await asyncio.wait_for(result, timeout=timeout)
@@ -1526,6 +1547,10 @@ class StagePool:
             )
             if method in self._ENGINE_CORE_CONTROL_ASYNC_METHODS and method not in self._CACHE_RESET_METHODS:
                 raise
+            if method in self._TYPED_ARG_ASYNC_METHODS:
+                # Same bool contract as above; the reason is in the log line
+                # emitted just above this branch.
+                return False
             if isinstance(exc, TimeoutError):
                 error = f"{type(exc).__name__}: {method} timed out after {timeout}s"
             else:
