@@ -104,6 +104,12 @@ class StagePool:
     # Only these EngineCore helpers may skip collective_rpc_async. A generic
     # ``{method}_async`` on AsyncMPClient must not silently drop timeout.
     _CACHE_RESET_METHODS = frozenset({"reset_prefix_cache", "reset_encoder_cache", "reset_mm_cache"})
+    # Helpers whose argument is a typed object instead of a scalar. They cannot
+    # ride the generic ``collective_rpc`` path: the msgpack codec decodes a
+    # nested dataclass (``LoRARequest``) back as a plain list, so the worker
+    # fails on ``lora_request.lora_int_id``. Each one is dispatched through its
+    # typed ``{method}_async`` client helper instead.
+    _TYPED_ARG_ASYNC_METHODS = frozenset({"add_lora"})
     _ENGINE_CORE_CONTROL_ASYNC_METHODS = frozenset(
         {
             "pause_scheduler",
@@ -1471,6 +1477,8 @@ class StagePool:
         EngineCore control methods (``pause_scheduler``, ``resume_scheduler``,
         ``sleep``, ``wake_up``) propagate worker exceptions. Capability probes
         and other RPCs still return ``{"supported": False, "error": ...}``.
+        Typed-argument helpers (``add_lora``) use their client helper and report
+        a plain per-replica result, like the diffusion subprocess path.
         """
         args = tuple(args or ())
         kwargs = dict(kwargs or {})
@@ -1490,6 +1498,18 @@ class StagePool:
                     return await result
                 if method in self._CACHE_RESET_METHODS or method == "release_kv_cache_memory":
                     return {"supported": False, "error": f"EngineCore helper {method}_async is unavailable"}
+
+            if self.stage_type != "diffusion" and method in self._TYPED_ARG_ASYNC_METHODS:
+                # ``add_lora`` carries a LoRARequest dataclass; msgpack turns it
+                # into a list on the generic path and the worker then raises
+                # ``'list' object has no attribute 'lora_int_id'``.
+                client_method = getattr(client, f"{method}_async", None)
+                if not callable(client_method):
+                    return {"supported": False, "error": f"EngineCore helper {method}_async is unavailable"}
+                result = client_method(*args, **kwargs)
+                if timeout is not None:
+                    return await asyncio.wait_for(result, timeout=timeout)
+                return await result
 
             return await client.collective_rpc_async(
                 method=method,
